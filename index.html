@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>工程驗收單（Word 格式版）</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root{ --page-w: 800px; }
+    body { background:#f8fafc; }
+    input, textarea { font-size:16px; }
+    .thumb { aspect-ratio: 4/3; object-fit: cover; background:#f1f5f9; }
+    /* PDF root mirrors A4 width visually */
+    #pdfRoot { width: var(--page-w); margin: 0 auto; }
+    .page { page-break-after: always; padding: 28px; background:#fff; }
+    .page:last-child { page-break-after: auto; }
+    .title { font-weight:700; font-size: 28px; text-align:center; margin-bottom: 12px; }
+    .kv { display:grid; grid-template-columns: 120px 1fr 120px 1fr; gap:10px 12px; font-size:14px; }
+    .kv b { text-align:right; }
+    .grid-photos { display:grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    .card { border: 1.5px solid #111; border-radius: 6px; padding: 10px; }
+    .card .label { font-weight:600; font-size:14px; margin: 8px 0 4px; }
+    .imgbox { width:100%; border:1px solid #e2e8f0; border-radius:4px; overflow:hidden; background:#fff; }
+    .imgbox img { display:block; width:100%; height:auto; }
+    .meta { font-size: 13px; }
+    .sig-box { border:2px dashed #999; padding:40px; margin-top:24px; height:160px; display:flex; align-items:center; font-size:20px; }
+    .section-title { font-size:16px; font-weight:600; margin: 8px 0; }
+    .hide { display:none; }
+  </style>
+</head>
+<body>
+  <div class="max-w-5xl mx-auto p-4 sm:p-6 space-y-4">
+    <header class="space-y-1">
+      <h1 class="text-xl font-bold">工程驗收單（Word 格式版預覽）</h1>
+      <p class="text-sm text-slate-500">上傳照片 → 填寫資訊 → 依 Word 版式輸出 PDF & TSV（中文安全）</p>
+    </header>
+
+    <!-- 基本欄位 -->
+    <section class="bg-white rounded-2xl shadow-sm border p-4 sm:p-6">
+      <div class="grid md:grid-cols-2 gap-4">
+        <label class="block">
+          <span class="text-sm font-semibold">工程類型：</span>
+          <input id="etype" placeholder="例：機水電工程" class="w-full mt-1 px-3 py-2 rounded-xl border" />
+        </label>
+        <label class="block">
+          <span class="text-sm font-semibold">施工階段：</span>
+          <input id="phase" placeholder="例：前/中/後" class="w-full mt-1 px-3 py-2 rounded-xl border" />
+        </label>
+        <label class="block">
+          <span class="text-sm font-semibold">施工區域：</span>
+          <input id="area" placeholder="例：5樓廊道" class="w-full mt-1 px-3 py-2 rounded-xl border" />
+        </label>
+        <label class="block">
+          <span class="text-sm font-semibold">承攬單位：</span>
+          <input id="contractor" placeholder="例：彤甯企業社" class="w-full mt-1 px-3 py-2 rounded-xl border" />
+        </label>
+      </div>
+    </section>
+
+    <!-- 上傳照片 -->
+    <section class="bg-white rounded-2xl shadow-sm border">
+      <div class="p-4 sm:p-6">
+        <h2 class="text-lg font-semibold mb-3">上傳照片</h2>
+        <input id="file" type="file" accept="image/*" multiple class="sr-only">
+        <label for="file" class="block border-2 border-dashed rounded-2xl p-6 text-center cursor-pointer hover:bg-slate-50">
+          <div class="text-slate-600">點擊選擇照片（可多張）；自動讀取 EXIF 日期/時間（若有）</div>
+        </label>
+      </div>
+      <div id="list" class="p-4 sm:p-6 pt-0 grid md:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+    </section>
+
+    <div class="flex gap-2">
+      <button id="btn-tsv" class="px-3 py-2 rounded-xl bg-white border shadow-sm hover:bg-slate-50 disabled:opacity-40">匯出 TSV</button>
+      <button id="btn-pdf" class="px-3 py-2 rounded-xl bg-blue-600 text-white shadow hover:bg-blue-700 disabled:opacity-40">產生 PDF（Word 版式）</button>
+    </div>
+
+    <p class="text-xs text-slate-500">PDF 轉換使用 <b>html2pdf</b>（畫面轉 PDF 影像），中文皆可正確顯示。</p>
+  </div>
+
+  <!-- PDF 專用容器（匯出前會動態填入內容） -->
+  <div id="pdfRoot" class="hide"></div>
+
+  <!-- 套件：exifr + html2pdf -->
+  <script src="https://unpkg.com/exifr/dist/lite.umd.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+
+  <script>
+    const els = {
+      etype: document.getElementById('etype'),
+      phase: document.getElementById('phase'),
+      area: document.getElementById('area'),
+      contractor: document.getElementById('contractor'),
+      file: document.getElementById('file'),
+      list: document.getElementById('list'),
+      pdfRoot: document.getElementById('pdfRoot'),
+      btnPDF: document.getElementById('btn-pdf'),
+      btnTSV: document.getElementById('btn-tsv'),
+    };
+
+    const state = { records: [] };
+
+    function pad(n){return String(n).padStart(2,'0')}
+    function formatDateTime(dt){
+      const d = new Date(dt);
+      const date = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+      const time = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+      return { date, time, full: `${date} ${time}` };
+    }
+    function fileToDataURL(file){
+      return new Promise((res,rej)=>{
+        const r = new FileReader();
+        r.onload=()=>res(r.result);
+        r.onerror=rej;
+        r.readAsDataURL(file);
+      });
+    }
+
+    // 讀取檔案與 EXIF
+    els.file.addEventListener('change', async e=>{
+      const files = Array.from(e.target.files||[]);
+      for(const f of files){
+        try{
+          const [exif, dataurl] = await Promise.all([
+            exifr.parse(f).catch(()=>null),
+            fileToDataURL(f),
+          ]);
+          const taken = exif?.DateTimeOriginal || exif?.CreateDate || new Date(f.lastModified);
+          const { date, time } = formatDateTime(taken);
+          state.records.push({
+            id: Date.now()+'_'+Math.random().toString(36).slice(2),
+            file: f,
+            dataurl,
+            desc: '',
+            exifDate: date,
+            exifTime: time,
+          });
+        }catch(err){ console.error('讀取失敗', err); }
+      }
+      render();
+      e.target.value='';
+    });
+
+    function render(){
+      els.btnPDF.disabled = els.btnTSV.disabled = state.records.length===0;
+      els.list.innerHTML = state.records.map((r,i)=>`
+        <div class="rounded-2xl border overflow-hidden bg-white">
+          <img src="${r.dataurl}" alt="preview" class="w-full thumb" />
+          <div class="p-3 space-y-2">
+            <label class="block">
+              <span class="text-xs text-slate-600">照片說明</span>
+              <textarea rows="2" placeholder="請輸入說明…" oninput="updateDesc('${r.id}', this.value)" class="border w-full p-2 rounded">${escapeHtml(r.desc)}</textarea>
+            </label>
+            <div class="text-xs text-slate-600">EXIF 日期：${r.exifDate || '—'}　EXIF 時間：${r.exifTime || '—'}</div>
+          </div>
+        </div>
+      `).join('');
+    }
+    window.updateDesc = (id, val)=>{
+      state.records = state.records.map(r => r.id===id ? {...r, desc: val} : r);
+    }
+    function escapeHtml(s=''){ return s.replace(/[&<>\"']/g, m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m])); }
+
+    // 匯出 TSV
+    els.btnTSV.addEventListener('click', ()=>{
+      if(!state.records.length) return;
+      const header = ['工程類型','施工階段','施工區域','承攬單位','檔名','照片說明','EXIF 日期','EXIF 時間'];
+      const rows = state.records.map(r => [
+        els.etype.value, els.phase.value, els.area.value, els.contractor.value,
+        r.file?.name || '', (r.desc||'').replace(/\t/g,' ').replace(/\n/g,' ').trim(),
+        r.exifDate || '', r.exifTime || ''
+      ]);
+      const tsv = [header.join('\t'), ...rows.map(a=>a.join('\t'))].join('\n');
+      const blob = new Blob([tsv], {type:'text/tab-separated-values;charset=utf-8'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href=url; a.download='photo_log.tsv'; a.click();
+      setTimeout(()=>URL.revokeObjectURL(url), 1000);
+    });
+
+    // 產生 PDF（Word 風格：兩欄卡片）
+    els.btnPDF.addEventListener('click', async ()=>{
+      if(!state.records.length) return;
+      const root = els.pdfRoot;
+      root.innerHTML = '';
+      root.classList.remove('hide');
+
+      // 首頁（標題 + 基本資料）
+      const now = formatDateTime(new Date()).full;
+      const cover = document.createElement('section');
+      cover.className = 'page';
+      cover.innerHTML = `
+        <div class="title">工程驗收單</div>
+        <div class="kv">
+          <b>工程類型</b><div>${escapeHtml(els.etype.value)}</div>
+          <b>施工階段</b><div>${escapeHtml(els.phase.value)}</div>
+          <b>施工區域</b><div>${escapeHtml(els.area.value)}</div>
+          <b>承攬單位</b><div>${escapeHtml(els.contractor.value)}</div>
+          <b>產生時間</b><div>${now}</div>
+        </div>
+        <div class="section-title">施工照片</div>
+      `;
+      root.appendChild(cover);
+
+      // 照片卡：兩欄
+      const perPage = 6; // 每頁最多 6 張（每列 2 張 x 3 列）
+      for(let i=0; i<state.records.length; i+=perPage){
+        const page = document.createElement('section');
+        page.className = 'page';
+        const slice = state.records.slice(i, i+perPage);
+        const grid = document.createElement('div');
+        grid.className = 'grid-photos';
+
+        for(const r of slice){
+          const card = document.createElement('div');
+          card.className = 'card';
+          card.innerHTML = `
+            <div class="label">施工照片</div>
+            <div class="imgbox"><img src="${r.dataurl}"/></div>
+            <div class="label">施工說明</div>
+            <div class="meta">${escapeHtml(r.desc||'')}</div>
+            <div class="label">施工區域</div>
+            <div class="meta">${escapeHtml(els.area.value)}</div>
+            <div class="label">施工階段</div>
+            <div class="meta">${escapeHtml(els.phase.value)}</div>
+            <div class="label">施工時間</div>
+            <div class="meta">${r.exifDate || '—'} ${r.exifTime || ''}</div>
+          `;
+          grid.appendChild(card);
+        }
+
+        page.appendChild(grid);
+        root.appendChild(page);
+      }
+
+      // 簽章頁
+      const sign = document.createElement('section');
+      sign.className = 'page';
+      sign.innerHTML = `
+        <div class="title">簽章</div>
+        <div class="sig-box">監造單位：＿＿＿＿＿＿</div>
+      `;
+      root.appendChild(sign);
+
+      const opt = {
+        margin:       [5,5,5,5],
+        filename:     '工程驗收單.pdf',
+        image:        { type: 'jpeg', quality: 0.96 },
+        html2canvas:  { scale: 2, useCORS: true },
+        jsPDF:        { unit: 'pt', format: 'a4', orientation: 'portrait' },
+        pagebreak:    { mode: ['css', 'legacy'] }
+      };
+      await html2pdf().from(root).set(opt).save();
+
+      root.innerHTML = '';
+      root.classList.add('hide');
+    });
+  </script>
+</body>
+</html>
