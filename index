@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>施工前/中/後 驗收資料產生器（修正版）</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    input, select, textarea { font-size: 16px; } /* 避免 iOS 自動縮放 */
+    .thumb { aspect-ratio: 4/3; object-fit: cover; background:#f8fafc; }
+    .sr-only-input {
+      position:absolute; left:-9999px; width:1px; height:1px; opacity:0;
+    }
+  </style>
+</head>
+<body class="bg-slate-50">
+  <div class="max-w-6xl mx-auto p-4 sm:p-6 space-y-4">
+    <header class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+      <div>
+        <h1 class="text-2xl font-bold">施工前/中/後 驗收資料產生器</h1>
+        <p class="text-sm text-slate-500">手機上傳照片 → 填寫說明與位置 → 一鍵匯出 PDF 與 TSV</p>
+      </div>
+      <div class="flex gap-2">
+        <button id="btn-tsv" class="px-3 py-2 rounded-xl bg-white border shadow-sm hover:bg-slate-50 disabled:opacity-40">匯出 TSV</button>
+        <button id="btn-pdf" class="px-3 py-2 rounded-xl bg-blue-600 text-white shadow hover:bg-blue-700 disabled:opacity-40">產生 PDF</button>
+      </div>
+    </header>
+
+    <!-- 基本資料 -->
+    <section class="bg-white rounded-2xl shadow-sm border p-4 sm:p-6">
+      <h2 class="text-lg font-semibold mb-3">基本資料</h2>
+      <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-3">
+        <label class="block"><span class="text-sm">專案名稱</span>
+          <input id="project" class="w-full mt-1 px-3 py-2 rounded-xl border" />
+        </label>
+        <label class="block"><span class="text-sm">工地/區域</span>
+          <input id="site" class="w-full mt-1 px-3 py-2 rounded-xl border" />
+        </label>
+        <label class="block"><span class="text-sm">承攬/工班</span>
+          <input id="contractor" class="w-full mt-1 px-3 py-2 rounded-xl border" />
+        </label>
+        <label class="block"><span class="text-sm">監造/帶驗人</span>
+          <input id="supervisor" class="w-full mt-1 px-3 py-2 rounded-xl border" />
+        </label>
+      </div>
+      <div class="flex gap-4 items-center mt-3 text-sm">
+        <label><input type="checkbox" id="groupByPhase" checked> 依施工階段分組</label>
+        <label><input type="checkbox" id="includeGps" checked> PDF 顯示 GPS</label>
+      </div>
+    </section>
+
+    <!-- 上傳 -->
+    <section class="bg-white rounded-2xl shadow-sm border">
+      <div class="p-4 sm:p-6">
+        <h2 class="text-lg font-semibold mb-3">上傳照片</h2>
+        <input id="file" type="file" accept="image/*" multiple class="sr-only-input" />
+        <label for="file" id="drop" class="block border-2 border-dashed rounded-2xl p-6 text-center cursor-pointer hover:bg-slate-50">
+          <div class="text-slate-500">點此選擇照片，或拖曳到這裡</div>
+        </label>
+      </div>
+      <div id="list" class="p-4 sm:p-6 pt-0"></div>
+    </section>
+  </div>
+
+  <script src="https://unpkg.com/exifr/dist/lite.umd.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script>
+    const PHASES = [
+      { value:'before', label:'施工前' },
+      { value:'during', label:'施工中' },
+      { value:'after', label:'施工後' }
+    ];
+    const TRADES = ['土木/結構','建築/裝修','水電/弱電','空調/消防','景觀/外構','其他'];
+    const state = { records: [] };
+
+    const els = {
+      project: project, site: site, contractor: contractor, supervisor: supervisor,
+      groupByPhase: groupByPhase, includeGps: includeGps,
+      file: file, list: list, btnPDF: btn-pdf, btnTSV: btn-tsv
+    };
+
+    function pad(n){return String(n).padStart(2,'0')}
+    function formatDate(dt){
+      const d = new Date(dt);
+      return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    }
+    function toInputDatetimeLocal(dt){
+      const d = new Date(dt);
+      const tz = d.getTimezoneOffset();
+      const local = new Date(d - tz*60000);
+      return local.toISOString().slice(0,16);
+    }
+    function degToDMS(deg,isLat){
+      if(!deg) return ''; 
+      const dir = isLat ? (deg>=0?'N':'S') : (deg>=0?'E':'W');
+      const abs = Math.abs(deg); const d = Math.floor(abs);
+      const mFloat = (abs-d)*60; const m=Math.floor(mFloat); const s=Math.round((mFloat-m)*60);
+      return `${d}°${m}'${s}" ${dir}`;
+    }
+    function fileToDataURL(f){ return new Promise(r=>{const rd=new FileReader(); rd.onload=()=>r(rd.result); rd.readAsDataURL(f);});}
+
+    async function handleFiles(fs){
+      for(const f of fs){
+        const [exif,dataurl]=await Promise.all([exifr.parse(f).catch(()=>null),fileToDataURL(f)]);
+        state.records.push({id:Date.now()+Math.random(), file:f, dataurl,
+          takenAt:exif?.DateTimeOriginal||new Date(f.lastModified),
+          lat:exif?.latitude||null, lng:exif?.longitude||null,
+          area:'',trade:'',desc:'',phase:'during'});
+      }
+      render();
+    }
+    file.onchange=e=>{handleFiles(e.target.files); e.target.value='';};
+
+    function render(){
+      list.innerHTML = state.records.map(r=>`
+        <div class="border rounded-xl mb-2 p-2">
+          <img src="${r.dataurl}" class="thumb w-full mb-2"/>
+          <input type="datetime-local" value="${toInputDatetimeLocal(r.takenAt)}" onchange="updateRec(${r.id},'takenAt',this.value)" class="border w-full mb-1"/>
+          <input placeholder="位置/區域" value="${r.area}" onchange="updateRec(${r.id},'area',this.value)" class="border w-full mb-1"/>
+          <select onchange="updateRec(${r.id},'trade',this.value)" class="border w-full mb-1">
+            ${TRADES.map(t=>`<option ${r.trade==t?'selected':''}>${t}</option>`).join('')}
+          </select>
+          <select onchange="updateRec(${r.id},'phase',this.value)" class="border w-full mb-1">
+            ${PHASES.map(p=>`<option value="${p.value}" ${r.phase==p.value?'selected':''}>${p.label}</option>`).join('')}
+          </select>
+          <textarea placeholder="說明" onchange="updateRec(${r.id},'desc',this.value)" class="border w-full">${r.desc}</textarea>
+        </div>`).join('');
+    }
+    window.updateRec=(id,key,val)=>{
+      state.records=state.records.map(r=>r.id==id?{...r,[key]:val}:r); render();
+    };
+
+    btn-tsv.onclick=()=>{
+      const header=['Project','Site','Contractor','Supervisor','Phase','Area','Trade','Description','TakenAt','Latitude','Longitude','FileName'];
+      const rows=state.records.map(r=>[project.value,site.value,contractor.value,supervisor.value,
+        PHASES.find(p=>p.value==r.phase)?.label,r.area,r.trade,r.desc,formatDate(r.takenAt),r.lat||'',r.lng||'',r.file.name]);
+      const tsv=[header.join('\\t'),...rows.map(x=>x.join('\\t'))].join('\\n');
+      const blob=new Blob([tsv],{type:'text/tab-separated-values'}); const url=URL.createObjectURL(blob);
+      const a=document.createElement('a');a.href=url;a.download='report.tsv';a.click();
+    };
+
+    btn-pdf.onclick=async()=>{
+      const { jsPDF }=window.jspdf; const doc=new jsPDF({unit:'pt',format:'a4'}); let y=40;
+      doc.setFontSize(20); doc.text('施工驗收照片紀錄',40,y); y+=30;
+      for(const r of state.records){
+        if(y>700){doc.addPage(); y=40;}
+        doc.text(`位置:${r.area} 工種:${r.trade} 階段:${r.phase}`,40,y); y+=12;
+        doc.text(`時間:${formatDate(r.takenAt)}`,40,y); y+=12;
+        if(r.lat) doc.text(`GPS:${degToDMS(r.lat,true)} / ${degToDMS(r.lng,false)}`,40,y), y+=12;
+        try{ doc.addImage(r.dataurl,'JPEG',40,y,200,150); }catch{}
+        y+=160;
+      }
+      doc.save('report.pdf');
+    };
+  </script>
+</body>
+</html>
