@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>施工驗收照片產生器</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50">
+  <div class="max-w-3xl mx-auto p-4 space-y-4">
+    <h1 class="text-2xl font-bold">施工前/中/後 驗收資料產生器</h1>
+    <p class="text-sm text-gray-500">手機上傳照片 → 填寫說明 → 匯出 PDF / TSV</p>
+
+    <!-- 上傳區 -->
+    <input id="file" type="file" accept="image/*" multiple class="sr-only">
+    <label for="file" class="block border-2 border-dashed rounded-lg p-6 text-center cursor-pointer hover:bg-gray-100">
+      點擊選擇照片（可多張）
+    </label>
+    <div id="list" class="space-y-2"></div>
+
+    <!-- 匯出按鈕 -->
+    <div class="flex gap-2">
+      <button id="btn-tsv" class="px-3 py-2 bg-white border rounded shadow">匯出 TSV</button>
+      <button id="btn-pdf" class="px-3 py-2 bg-blue-600 text-white rounded shadow">產生 PDF</button>
+    </div>
+  </div>
+
+  <!-- 套件 -->
+  <script src="https://unpkg.com/exifr/dist/lite.umd.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+  <script>
+    const state = { records: [] };
+
+    function fileToDataURL(file){
+      return new Promise((res,rej)=>{
+        const r = new FileReader();
+        r.onload=()=>res(r.result);
+        r.onerror=rej;
+        r.readAsDataURL(file);
+      });
+    }
+
+    document.getElementById('file').addEventListener('change', async e=>{
+      for(const f of e.target.files){
+        const exif = await exifr.parse(f).catch(()=>null);
+        const dataurl = await fileToDataURL(f);
+        state.records.push({
+          file: f,
+          dataurl,
+          takenAt: exif?.DateTimeOriginal || new Date(f.lastModified),
+          desc: ''
+        });
+      }
+      render();
+    });
+
+    function render(){
+      document.getElementById('list').innerHTML = state.records.map((r,i)=>`
+        <div class="border rounded p-2">
+          <img src="${r.dataurl}" class="w-full mb-2"/>
+          <input placeholder="照片說明" value="${r.desc}"
+            onchange="updateDesc(${i},this.value)"
+            class="border w-full p-1"/>
+          <div class="text-xs text-gray-500 mt-1">時間：${new Date(r.takenAt).toLocaleString()}</div>
+        </div>
+      `).join('');
+    }
+    window.updateDesc=(i,val)=>{ state.records[i].desc=val; };
+
+    document.getElementById('btn-tsv').onclick=()=>{
+      const header=['FileName','Description','TakenAt'];
+      const rows=state.records.map(r=>[r.file.name, r.desc, new Date(r.takenAt).toLocaleString()]);
+      const tsv=[header.join('\t'),...rows.map(x=>x.join('\t'))].join('\n');
+      const blob=new Blob([tsv],{type:'text/tab-separated-values'});
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement('a');a.href=url;a.download='report.tsv';a.click();
+    };
+
+    document.getElementById('btn-pdf').onclick=async()=>{
+      const { jsPDF }=window.jspdf;
+      const doc=new jsPDF({unit:'pt',format:'a4'});
+      let y=40;
+      doc.setFontSize(18); doc.text('施工驗收照片紀錄',40,y); y+=30;
+      for(const r of state.records){
+        if(y>700){doc.addPage(); y=40;}
+        doc.setFontSize(12);
+        doc.text(`檔名: ${r.file.name}`,40,y); y+=14;
+        doc.text(`說明: ${r.desc}`,40,y); y+=14;
+        doc.text(`時間: ${new Date(r.takenAt).toLocaleString()}`,40,y); y+=14;
+        try{ doc.addImage(r.dataurl,'JPEG',40,y,200,150);}catch{}
+        y+=160;
+      }
+      doc.save('report.pdf');
+    };
+  </script>
+</body>
+</html>
